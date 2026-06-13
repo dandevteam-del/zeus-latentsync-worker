@@ -36,8 +36,13 @@ RUN git clone --depth 1 https://github.com/bytedance/LatentSync.git /app/LatentS
 RUN pip install -r /app/LatentSync/requirements.txt && \
     pip install runpod huggingface_hub tensorflow-cpu
 
-# Weights are NOT baked at build (keeps the image small + the build reliable).
-# handler.py downloads them on first cold start, cached on the worker.
+# The big LatentSync unet (5GB) is NOT baked (downloaded at cold start). But the
+# small VAE the inference script loads via diffusers (~335MB) IS baked here, into
+# the same HF cache the runtime uses — guaranteed present, no runtime download,
+# no cache-path race. This was the recurring inference failure.
+RUN python3 -c "from huggingface_hub import snapshot_download; \
+snapshot_download('stabilityai/sd-vae-ft-mse', \
+allow_patterns=['*.safetensors','*.bin','*.json'])"
 
 ENV PYTHONPATH="/app/LatentSync:${PYTHONPATH}"
 COPY handler.py /app/handler.py
