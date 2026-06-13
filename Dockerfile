@@ -12,11 +12,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/app/hfcache \
     HUGGINGFACE_HUB_CACHE=/app/hfcache/hub \
     TORCH_HOME=/app/torchcache \
-    TMPDIR=/app/tmp
+    TMPDIR=/app/tmp \
+    HOME=/app \
+    INSIGHTFACE_HOME=/app/.insightface
 
-# Force all model caches onto /app (the container disk) instead of /root/.cache,
-# so the runtime VAE/whisper downloads land on the big disk, not a small mount.
-RUN mkdir -p /app/hfcache/hub /app/torchcache /app/tmp
+# /root is a small mount; /app holds the big container disk (the 5GB unet
+# download lands there fine). Redirect EVERY home-relative cache (HF default,
+# insightface face-detector, torch, matplotlib...) to /app by setting HOME=/app,
+# so no runtime model download ever touches the small /root mount.
+RUN mkdir -p /app/hfcache/hub /app/torchcache /app/tmp /app/.insightface
 
 WORKDIR /app
 
