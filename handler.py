@@ -42,6 +42,36 @@ def _find_config() -> str:
 
 
 CONFIG = _find_config()
+HF_REPO = os.environ.get("LATENTSYNC_HF_REPO", "ByteDance/LatentSync-1.6")
+CKPT_DIR = f"{LATENTSYNC_DIR}/checkpoints"
+
+_weights_ready = False
+
+
+def _ensure_weights() -> None:
+    """Download LatentSync weights on first use (cached on the worker disk).
+    Done at runtime, not build time, so the image stays small and the build
+    can't fail on a flaky/oversized download. Retries on transient errors."""
+    global _weights_ready
+    if _weights_ready or os.path.isfile(UNET_CKPT):
+        _weights_ready = True
+        return
+    from huggingface_hub import snapshot_download
+    last = None
+    for attempt in range(3):
+        try:
+            snapshot_download(HF_REPO, local_dir=CKPT_DIR,
+                              allow_patterns=["latentsync_unet.pt", "whisper/tiny.pt"],
+                              max_workers=4)
+            _weights_ready = True
+            return
+        except Exception as e:  # transient network/HF errors
+            last = e
+            time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"weight download failed after retries: {last}")
+
+
+import time
 
 
 def _write_b64(b64: str, path: str) -> None:
@@ -58,6 +88,11 @@ def handler(event):
     inp = event.get("input") or {}
     if not inp.get("video_b64") or not inp.get("audio_b64"):
         return {"error": "video_b64 and audio_b64 are required"}
+
+    try:
+        _ensure_weights()
+    except Exception as e:
+        return {"error": f"weights unavailable: {e}"}
 
     work = tempfile.mkdtemp(prefix="latentsync-")
     tag = uuid.uuid4().hex[:8]

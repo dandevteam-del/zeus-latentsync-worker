@@ -6,9 +6,9 @@ FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    HF_HUB_ENABLE_HF_TRANSFER=1 \
     LATENTSYNC_DIR=/app/LatentSync \
-    LATENTSYNC_UNET=/app/LatentSync/checkpoints/latentsync_unet.pt
+    LATENTSYNC_UNET=/app/LatentSync/checkpoints/latentsync_unet.pt \
+    LATENTSYNC_HF_REPO=ByteDance/LatentSync-1.6
 
 WORKDIR /app
 
@@ -26,12 +26,10 @@ RUN pip install torch==2.5.1 torchvision==0.20.1 --extra-index-url https://downl
 # LatentSync (ByteDance, OpenRAIL++ — commercial use OK with attribution).
 RUN git clone --depth 1 https://github.com/bytedance/LatentSync.git /app/LatentSync
 RUN pip install -r /app/LatentSync/requirements.txt && \
-    pip install runpod huggingface_hub hf_transfer tensorflow-cpu
+    pip install runpod huggingface_hub tensorflow-cpu
 
-# Bake the checkpoints into the image (current official repo: LatentSync-1.6).
-RUN python3 -c "from huggingface_hub import snapshot_download; \
-snapshot_download('ByteDance/LatentSync-1.6', local_dir='/app/LatentSync/checkpoints', \
-allow_patterns=['latentsync_unet.pt','whisper/tiny.pt'])"
+# Weights are NOT baked at build (keeps the image small + the build reliable).
+# handler.py downloads them on first cold start, cached on the worker.
 
 ENV PYTHONPATH="/app/LatentSync:${PYTHONPATH}"
 COPY handler.py /app/handler.py
