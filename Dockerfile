@@ -40,13 +40,21 @@ RUN git clone --depth 1 https://github.com/bytedance/LatentSync.git /app/LatentS
 RUN pip install -r /app/LatentSync/requirements.txt && \
     pip install runpod huggingface_hub tensorflow-cpu
 
-# The big LatentSync unet (5GB) is NOT baked (downloaded at cold start). But the
-# small VAE the inference script loads via diffusers (~335MB) IS baked here, into
-# the same HF cache the runtime uses — guaranteed present, no runtime download,
-# no cache-path race. This was the recurring inference failure.
+# BAKE EVERY model into the image (read-only layers don't count against the
+# small runtime container disk). The worker then downloads NOTHING at runtime —
+# this is the definitive fix for the recurring "No space left on device".
+#   1. VAE (diffusers from_pretrained → HF cache)
 RUN python3 -c "from huggingface_hub import snapshot_download; \
-snapshot_download('stabilityai/sd-vae-ft-mse', \
-allow_patterns=['*.safetensors','*.bin','*.json'])"
+snapshot_download('stabilityai/sd-vae-ft-mse', allow_patterns=['*.safetensors','*.bin','*.json'])"
+#   2. LatentSync unet + whisper → the checkpoints dir the config points at
+RUN python3 -c "from huggingface_hub import snapshot_download; \
+snapshot_download('ByteDance/LatentSync-1.6', local_dir='/app/LatentSync/checkpoints', \
+allow_patterns=['latentsync_unet.pt','whisper/tiny.pt'])"
+#   3. insightface buffalo_l face detector → checkpoints/auxiliary/models (the
+#      relative root LatentSync's face_detector.py uses, resolved from cwd /app/LatentSync)
+RUN python3 -c "from insightface.app import FaceAnalysis; \
+FaceAnalysis(allowed_modules=['detection','landmark_2d_106'], \
+root='/app/LatentSync/checkpoints/auxiliary', providers=['CPUExecutionProvider']).prepare(ctx_id=-1, det_size=(640,640))"
 
 ENV PYTHONPATH="/app/LatentSync:${PYTHONPATH}"
 COPY handler.py /app/handler.py
