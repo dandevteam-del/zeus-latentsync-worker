@@ -41,15 +41,21 @@ def _find_config() -> str:
     return candidates[0] if candidates else f"{LATENTSYNC_DIR}/configs/unet/stage2.yaml"
 
 
+import time
+
 CONFIG = _find_config()
 HF_REPO = os.environ.get("LATENTSYNC_HF_REPO", "ByteDance/LatentSync-1.6")
-CKPT_DIR = f"{LATENTSYNC_DIR}/checkpoints"
+# Checkpoints live on the network volume; LatentSync's code references them via
+# the relative path "checkpoints/auxiliary" (from cwd /app/LatentSync), so we
+# symlink /app/LatentSync/checkpoints -> the volume dir at startup.
+VOL = "/runpod-volume"
+CKPT_DIR = f"{VOL}/ls-ckpt"
+REPO_CKPT_LINK = f"{LATENTSYNC_DIR}/checkpoints"
 
 _weights_ready = False
 
 
 def _dl(fn, what: str):
-    """Run a download with retries on transient HF/network errors."""
     last = None
     for attempt in range(3):
         try:
@@ -61,36 +67,51 @@ def _dl(fn, what: str):
 
 
 def _ensure_weights() -> None:
-    """Make every model LatentSync needs present before inference, on first use.
-    Two separate stores:
-      • LatentSync repo (unet + whisper) → explicit local_dir checkpoints/
-      • auxiliary models loaded via diffusers from_pretrained (the VAE) → HF cache
-    Done at runtime (not build) so the image stays small and the build is
-    reliable. Idempotent + retried."""
+    """Stage every model onto the network volume on first use (persistent, large
+    — written once). Everything (unet, whisper, VAE via HF cache, insightface) is
+    routed to /runpod-volume so the tiny container disk is never touched."""
     global _weights_ready
     if _weights_ready:
         return
     from huggingface_hub import snapshot_download
 
-    # 1. LatentSync unet + whisper into the checkpoints dir the config points at.
+    # Make sure the volume dirs exist and the repo's relative checkpoints path
+    # points at the volume (so the insightface root "checkpoints/auxiliary" and
+    # the unet both resolve onto /runpod-volume).
+    for d in (CKPT_DIR, f"{VOL}/hf/hub", f"{VOL}/torch", f"{VOL}/insightface", f"{VOL}/tmp"):
+        os.makedirs(d, exist_ok=True)
+    if not os.path.islink(REPO_CKPT_LINK):
+        if os.path.isdir(REPO_CKPT_LINK):
+            import shutil
+            shutil.rmtree(REPO_CKPT_LINK, ignore_errors=True)
+        try:
+            os.symlink(CKPT_DIR, REPO_CKPT_LINK)
+        except FileExistsError:
+            pass
+
+    # 1. unet + whisper → volume checkpoints
     if not os.path.isfile(UNET_CKPT):
         _dl(lambda: snapshot_download(
             HF_REPO, local_dir=CKPT_DIR,
             allow_patterns=["latentsync_unet.pt", "whisper/tiny.pt"],
             max_workers=4), "latentsync weights")
 
-    # 2. VAE the inference script loads via AutoencoderKL.from_pretrained — must
-    #    be in the HF cache (HF_HOME), NOT the checkpoints dir. Pre-cache it so
-    #    inference finds it offline instead of failing mid-run.
+    # 2. VAE → HF cache on the volume (HF_HOME=/runpod-volume/hf)
     _dl(lambda: snapshot_download(
         "stabilityai/sd-vae-ft-mse",
         allow_patterns=["*.safetensors", "*.bin", "*.json"],
         max_workers=4), "sd-vae-ft-mse")
 
+    # 3. insightface buffalo_l → volume (via the symlinked checkpoints/auxiliary)
+    try:
+        from insightface.app import FaceAnalysis
+        FaceAnalysis(allowed_modules=["detection", "landmark_2d_106"],
+                     root=f"{CKPT_DIR}/auxiliary",
+                     providers=["CPUExecutionProvider"]).prepare(ctx_id=-1, det_size=(640, 640))
+    except Exception:
+        pass  # LatentSync will fetch it itself onto the same volume path if needed
+
     _weights_ready = True
-
-
-import time
 
 
 def _write_b64(b64: str, path: str) -> None:
