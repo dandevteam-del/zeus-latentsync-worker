@@ -48,27 +48,46 @@ CKPT_DIR = f"{LATENTSYNC_DIR}/checkpoints"
 _weights_ready = False
 
 
-def _ensure_weights() -> None:
-    """Download LatentSync weights on first use (cached on the worker disk).
-    Done at runtime, not build time, so the image stays small and the build
-    can't fail on a flaky/oversized download. Retries on transient errors."""
-    global _weights_ready
-    if _weights_ready or os.path.isfile(UNET_CKPT):
-        _weights_ready = True
-        return
-    from huggingface_hub import snapshot_download
+def _dl(fn, what: str):
+    """Run a download with retries on transient HF/network errors."""
     last = None
     for attempt in range(3):
         try:
-            snapshot_download(HF_REPO, local_dir=CKPT_DIR,
-                              allow_patterns=["latentsync_unet.pt", "whisper/tiny.pt"],
-                              max_workers=4)
-            _weights_ready = True
-            return
-        except Exception as e:  # transient network/HF errors
+            return fn()
+        except Exception as e:
             last = e
             time.sleep(5 * (attempt + 1))
-    raise RuntimeError(f"weight download failed after retries: {last}")
+    raise RuntimeError(f"{what} download failed after retries: {last}")
+
+
+def _ensure_weights() -> None:
+    """Make every model LatentSync needs present before inference, on first use.
+    Two separate stores:
+      • LatentSync repo (unet + whisper) → explicit local_dir checkpoints/
+      • auxiliary models loaded via diffusers from_pretrained (the VAE) → HF cache
+    Done at runtime (not build) so the image stays small and the build is
+    reliable. Idempotent + retried."""
+    global _weights_ready
+    if _weights_ready:
+        return
+    from huggingface_hub import snapshot_download
+
+    # 1. LatentSync unet + whisper into the checkpoints dir the config points at.
+    if not os.path.isfile(UNET_CKPT):
+        _dl(lambda: snapshot_download(
+            HF_REPO, local_dir=CKPT_DIR,
+            allow_patterns=["latentsync_unet.pt", "whisper/tiny.pt"],
+            max_workers=4), "latentsync weights")
+
+    # 2. VAE the inference script loads via AutoencoderKL.from_pretrained — must
+    #    be in the HF cache (HF_HOME), NOT the checkpoints dir. Pre-cache it so
+    #    inference finds it offline instead of failing mid-run.
+    _dl(lambda: snapshot_download(
+        "stabilityai/sd-vae-ft-mse",
+        allow_patterns=["*.safetensors", "*.bin", "*.json"],
+        max_workers=4), "sd-vae-ft-mse")
+
+    _weights_ready = True
 
 
 import time
