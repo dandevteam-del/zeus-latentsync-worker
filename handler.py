@@ -20,11 +20,28 @@ import uuid
 
 import runpod
 
+import glob
+
 LATENTSYNC_DIR = os.environ.get("LATENTSYNC_DIR", "/app/LatentSync")
 UNET_CKPT = os.environ.get(
     "LATENTSYNC_UNET", f"{LATENTSYNC_DIR}/checkpoints/latentsync_unet.pt")
-CONFIG = os.environ.get(
-    "LATENTSYNC_CONFIG", f"{LATENTSYNC_DIR}/configs/unet/stage2.yaml")
+
+
+def _find_config() -> str:
+    """LatentSync's unet config filename varies by version (stage2.yaml,
+    stage2_512.yaml, ...). Honor an explicit override, else pick the best match."""
+    override = os.environ.get("LATENTSYNC_CONFIG")
+    if override and os.path.isfile(override):
+        return override
+    candidates = sorted(glob.glob(f"{LATENTSYNC_DIR}/configs/unet/*.yaml"))
+    for pref in ("stage2", "unet"):
+        for c in candidates:
+            if pref in os.path.basename(c).lower():
+                return c
+    return candidates[0] if candidates else f"{LATENTSYNC_DIR}/configs/unet/stage2.yaml"
+
+
+CONFIG = _find_config()
 
 
 def _write_b64(b64: str, path: str) -> None:
