@@ -8,7 +8,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     LATENTSYNC_DIR=/app/LatentSync \
     LATENTSYNC_UNET=/app/LatentSync/checkpoints/latentsync_unet.pt \
-    LATENTSYNC_HF_REPO=ByteDance/LatentSync-1.6
+    LATENTSYNC_HF_REPO=ByteDance/LatentSync-1.6 \
+    HF_HOME=/app/hfcache \
+    HUGGINGFACE_HUB_CACHE=/app/hfcache/hub \
+    TORCH_HOME=/app/torchcache \
+    TMPDIR=/app/tmp
+
+# Force all model caches onto /app (the container disk) instead of /root/.cache,
+# so the runtime VAE/whisper downloads land on the big disk, not a small mount.
+RUN mkdir -p /app/hfcache/hub /app/torchcache /app/tmp
 
 WORKDIR /app
 
